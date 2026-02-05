@@ -9,7 +9,7 @@ from rest_framework_api.views import StandardAPIView
 from django.contrib.auth import get_user_model
 from django.contrib.auth.hashers import make_password
 from django.core.files.base import ContentFile
-from apps.authentication.models import Device, UserDevice
+from apps.authentication.models import Device, DeviceFingerprint, UserAccount, UserDevice
 from django.contrib.auth import authenticate
 
 from django.utils.crypto import get_random_string
@@ -281,8 +281,11 @@ class VerifyOTPLoginView(StandardAPIView):
                 "refresh": str(refresh)
             })
 
-            return self.error("Error verifying OTP code.")
+        return self.error("Error verifying OTP code.")
 
+
+from django.contrib.auth import authenticate
+from django.utils import timezone
 
 class RegistrarDispositivoView(StandardAPIView):
     permission_classes = [HasValidAPIKey]
@@ -292,11 +295,12 @@ class RegistrarDispositivoView(StandardAPIView):
         correo = request.data.get('correo')
         contrasenia = request.data.get('contrasenia')
         device_hash = request.data.get('hash')
+        componentes = request.data.get('componentes')
 
-        if not codigo or not correo or not device_hash or not contrasenia:
-            return self.error("correo, codigo, contraseña y hash requeridos.")
+        if not codigo or not correo or not device_hash or not contrasenia or not componentes:
+            return self.error("correo, codigo, contraseña, hash y componentes requeridos.")
 
-        # Autenticar usuario
+        # ✅ Autenticar usuario
         user = authenticate(request, email=correo, password=contrasenia)
         if not user or not user.is_active:
             return self.error("Credenciales inválidas.")
@@ -304,11 +308,29 @@ class RegistrarDispositivoView(StandardAPIView):
         if str(user.code) != str(codigo):
             return self.error("Código de usuario inválido.")
 
-        # Obtener o crear device
-        device, _ = Device.objects.get_or_create(device_hash=device_hash)
+        # ✅ Crear u obtener el Device
+        device, created = Device.objects.get_or_create(
+            device_hash=device_hash,
+            defaults={
+                "hostname": componentes.get("nombre_maquina"),
+            }
+        )
+
+        # ✅ Crear o actualizar el fingerprint (CLAVE DE ESCALABILIDAD)
+        DeviceFingerprint.objects.update_or_create(
+            device=device,
+            defaults={
+                "uuid_sistema": componentes.get("uuid_sistema"),
+                "numero_serie_cpu": componentes.get("numero_serie_cpu"),
+                "numero_serie_disco": componentes.get("numero_serie_disco"),
+                "baseboard_serial": componentes.get("baseboard_serial"),
+                "bios_serial": componentes.get("bios_serial"),
+                "mac_address": componentes.get("mac_address"),
+                "nombre_maquina": componentes.get("nombre_maquina"),
+            }
+        )
 
         # 🔴 VALIDACIÓN CRÍTICA
-        # ¿Este device ya está autorizado para otro usuario?
         other_authorized = UserDevice.objects.filter(
             device=device,
             authorized=True
@@ -319,21 +341,26 @@ class RegistrarDispositivoView(StandardAPIView):
                 "Este equipo ya está autorizado para otro usuario. Contacte al administrador."
             )
 
-        # Buscar relación usuario-dispositivo
-        user_device = UserDevice.objects.filter(user=user, device=device).first()
+        # ✅ Relación usuario-dispositivo
+        user_device, ud_created = UserDevice.objects.get_or_create(
+            user=user,
+            device=device,
+            defaults={"authorized": False}
+        )
 
-        if not user_device:
-            UserDevice.objects.create(
-                user=user,
-                device=device,
-                authorized=False
-            )
+        if ud_created:
             return self.response("Dispositivo registrado. Pendiente de autorización.")
 
         if not user_device.authorized:
             return self.error("Dispositivo aún no autorizado.")
 
+        # Registrar último login del dispositivo
+        user_device.last_login = timezone.now()
+        user_device.last_ip = request.META.get("REMOTE_ADDR")
+        user_device.save()
+
         return self.response(f"Este dispositivo ya fue autorizado a {user.username}")
+
 
 class PermissionsView(StandardAPIView):
     permission_classes = [permissions.IsAuthenticated, HasValidAPIKey]
@@ -365,41 +392,75 @@ class PermissionsView(StandardAPIView):
         
             
             
+import time
+import logging
+from django.utils import timezone
+
+logger = logging.getLogger("security")
+
 class VerificarDispositivoView(StandardAPIView):
     permission_classes = [HasValidAPIKey]
 
     def post(self, request):
+        start_time = time.time()
+
         codigo = request.data.get("codigo")
         device_hash = request.data.get("hash")
+        ip = request.META.get("REMOTE_ADDR")
+
+        # Respuesta genérica por defecto
+        response_data = {
+            "status": "UNAUTHORIZED",
+            "message": "Acceso denegado."
+        }
 
         if not codigo or not device_hash:
-            return self.error("codigo y hash requeridos.")
+            self._log_attempt("Missing data", codigo, device_hash, ip)
+            return self._constant_response(start_time, response_data)
 
-        # Intentamos obtener usuario y dispositivo, pero no exponemos errores al cliente
-        user = User.objects.filter(code=codigo, is_active=True).first()
+        user = UserAccount.objects.filter(code=codigo, is_active=True).first()
         device = Device.objects.filter(device_hash=device_hash).first()
-        user_device = None
 
-        if user and device:
-            user_device = UserDevice.objects.filter(user=user, device=device).first()
+        if not user or not device:
+            self._log_attempt("User or device not found", codigo, device_hash, ip)
+            return self._constant_response(start_time, response_data)
 
-        # Logueamos internamente el detalle
-        if not user:
-            return self.error(f"Intento de acceso con código inexistente: {codigo}")
-        elif not device:
-            return self.error(f"Intento de acceso con dispositivo no registrado: {device_hash}")
-        elif not user_device:
-            return self.error(f"Dispositivo {device_hash} no vinculado a usuario {user.email}")
-        elif not user_device.authorized:
-            return self.error(f"Dispositivo {device_hash} pendiente de autorización para {user.email}")
+        user_device = UserDevice.objects.filter(user=user, device=device).first()
 
-        # Respuesta genérica para el cliente
-        if user_device and user_device.authorized:
-            status_code = "AUTHORIZED"
-        else:
-            status_code = "UNAUTHORIZED"
+        if not user_device:
+            self._log_attempt("Device not linked to user", codigo, device_hash, ip)
+            return self._constant_response(start_time, response_data)
 
-        return self.response({
-            "status": status_code,
-            "message": "Acceso denegado." if status_code == "UNAUTHORIZED" else "Dispositivo autorizado."
-        })
+        if not user_device.authorized:
+            self._log_attempt("Device not authorized", codigo, device_hash, ip)
+            return self._constant_response(start_time, response_data)
+
+        # ✅ Dispositivo autorizado
+        user_device.last_login = timezone.now()
+        user_device.last_ip = ip
+        user_device.save()
+
+        response_data = {
+            "status": "AUTHORIZED",
+            "message": "Dispositivo autorizado."
+        }
+
+        self._log_attempt("Authorized access", codigo, device_hash, ip)
+        return self._constant_response(start_time, response_data)
+
+    # -------------------------------------
+
+    def _log_attempt(self, reason, codigo, device_hash, ip):
+        logger.warning(
+            f"[DEVICE CHECK] {reason} | code={codigo} | hash={device_hash} | ip={ip}"
+        )
+
+    def _constant_response(self, start_time, data, min_delay=1.2):
+        """
+        Evita timing attacks: siempre tarda lo mismo.
+        """
+        elapsed = time.time() - start_time
+        if elapsed < min_delay:
+            time.sleep(min_delay - elapsed)
+        return self.response(data)
+

@@ -111,6 +111,9 @@ class UserAccount(AbstractBaseUser, PermissionsMixin):
         if self.qr_code and hasattr(self.qr_code, "url"):
             return self.qr_code.url
         return None
+    class Meta:
+        verbose_name = 'Usuario'
+        verbose_name_plural = 'Usuarios'
     
 
 
@@ -128,7 +131,24 @@ class Device(models.Model):
 
     def __str__(self):
         return self.device_hash
+    class Meta:
+        verbose_name = 'Dispositivo'
+        verbose_name_plural = 'Dispositivos'
     
+
+class DeviceFingerprint(models.Model):
+    device = models.OneToOneField(Device, on_delete=models.CASCADE, related_name="fingerprint")
+
+    uuid_sistema = models.CharField(max_length=255, db_index=True)
+    numero_serie_cpu = models.CharField(max_length=255, db_index=True)
+    numero_serie_disco = models.CharField(max_length=255, db_index=True)
+    baseboard_serial = models.CharField(max_length=255, db_index=True)
+    bios_serial = models.CharField(max_length=255, db_index=True)
+    mac_address = models.CharField(max_length=255, db_index=True)
+    nombre_maquina = models.CharField(max_length=255)
+
+    created_at = models.DateTimeField(auto_now_add=True)
+
 
 class UserDevice(models.Model):
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
@@ -138,12 +158,21 @@ class UserDevice(models.Model):
 
     authorized = models.BooleanField(default=False)
     authorized_at = models.DateTimeField(null=True, blank=True)
+    authorized_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="devices_authorized"
+    )
 
     last_login = models.DateTimeField(null=True, blank=True)
     last_ip = models.GenericIPAddressField(null=True, blank=True)
 
     class Meta:
         unique_together = ("user", "device")
+        verbose_name = 'Dispositivo de usuario'
+        verbose_name_plural = 'Dispositivos de usuario'
 
 
     
