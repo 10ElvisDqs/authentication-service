@@ -29,6 +29,4 @@ urlpatterns = [
     path("registrar_dispositivo/", RegistrarDispositivoView.as_view()),
     path("my_permissions/", PermissionsView.as_view()),
     path("verificar_dispositivo/", VerificarDispositivoView.as_view()),
-
-
 ]
