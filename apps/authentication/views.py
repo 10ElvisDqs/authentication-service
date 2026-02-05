@@ -4,6 +4,7 @@ from datetime import timedelta
 from rest_framework_simplejwt.tokens import RefreshToken
 from rest_framework import status
 from rest_framework import permissions
+from django.contrib.auth.models import Permission
 from rest_framework_api.views import StandardAPIView
 from django.contrib.auth import get_user_model
 from django.contrib.auth.hashers import make_password
@@ -280,7 +281,7 @@ class VerifyOTPLoginView(StandardAPIView):
                 "refresh": str(refresh)
             })
 
-        return self.error("Error verifying OTP code.")
+            return self.error("Error verifying OTP code.")
 
 
 class RegistrarDispositivoView(StandardAPIView):
@@ -340,17 +341,30 @@ class PermissionsView(StandardAPIView):
     def get(self, request):
         user = request.user
 
-        permissions_list = list(user.get_all_permissions())
+        permissions = Permission.objects.filter(user=user) | Permission.objects.filter(group__user=user)
+        permissions = permissions.distinct()
+
+        permissions_data = [
+            {
+                "id": perm.id,
+                "codename": perm.codename,
+                "name": perm.name,
+                "app": perm.content_type.app_label,
+                "model": perm.content_type.model,
+            }
+            for perm in permissions
+        ]
+
         groups = list(user.groups.values_list("name", flat=True))
 
         return self.response({
             "user": user.email,
-            "is_superuser": user.is_superuser,
-            "is_staff": user.is_staff,
             "groups": groups,
-            "permissions": permissions_list,
+            "permissions": permissions_data,
         })
-
+        
+            
+            
 class VerificarDispositivoView(StandardAPIView):
     permission_classes = [HasValidAPIKey]
 
@@ -361,34 +375,31 @@ class VerificarDispositivoView(StandardAPIView):
         if not codigo or not device_hash:
             return self.error("codigo y hash requeridos.")
 
-        try:
-            user = User.objects.get(code=codigo, is_active=True)
-        except User.DoesNotExist:
-            return self.error("Usuario no existe.")
+        # Intentamos obtener usuario y dispositivo, pero no exponemos errores al cliente
+        user = User.objects.filter(code=codigo, is_active=True).first()
+        device = Device.objects.filter(device_hash=device_hash).first()
+        user_device = None
 
-        try:
-            device = Device.objects.get(device_hash=device_hash)
-        except Device.DoesNotExist:
-            return self.response({
-                "status": "NOT_REGISTERED",
-                "message": "El dispositivo no está registrado."
-            })
+        if user and device:
+            user_device = UserDevice.objects.filter(user=user, device=device).first()
 
-        user_device = UserDevice.objects.filter(user=user, device=device).first()
+        # Logueamos internamente el detalle
+        if not user:
+            return self.error(f"Intento de acceso con código inexistente: {codigo}")
+        elif not device:
+            return self.error(f"Intento de acceso con dispositivo no registrado: {device_hash}")
+        elif not user_device:
+            return self.error(f"Dispositivo {device_hash} no vinculado a usuario {user.email}")
+        elif not user_device.authorized:
+            return self.error(f"Dispositivo {device_hash} pendiente de autorización para {user.email}")
 
-        if not user_device:
-            return self.response({
-                "status": "NOT_REGISTERED",
-                "message": "El dispositivo no está vinculado al usuario."
-            })
-
-        if not user_device.authorized:
-            return self.response({
-                "status": "PENDING",
-                "message": "Dispositivo pendiente de autorización."
-            })
+        # Respuesta genérica para el cliente
+        if user_device and user_device.authorized:
+            status_code = "AUTHORIZED"
+        else:
+            status_code = "UNAUTHORIZED"
 
         return self.response({
-            "status": "AUTHORIZED",
-            "message": "Dispositivo autorizado."
+            "status": status_code,
+            "message": "Acceso denegado." if status_code == "UNAUTHORIZED" else "Dispositivo autorizado."
         })

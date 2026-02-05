@@ -11,6 +11,8 @@ staticfiles/
 core/.env
 .env
 
+.db.sqlite3
+.dbdata/
 # Docker
 *.log
 *.pid
