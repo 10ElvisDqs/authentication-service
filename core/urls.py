@@ -4,6 +4,7 @@ from django.conf.urls.static import static
 from django.conf import settings
 
 urlpatterns = [
+    path('api/authorization/', include('apps.authorization.urls')),
     path('api/authentication/', include("apps.authentication.urls")),
     path('api/profile/', include("apps.user_profile.urls")),
     path('api/blog/', include('apps.blog.urls')),
