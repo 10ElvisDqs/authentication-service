@@ -123,7 +123,6 @@ class Device(models.Model):
     device_hash = models.CharField(max_length=255, unique=True)
     is_active = models.BooleanField(default=False)
 
-    # info opcional para auditoría
     hostname = models.CharField(max_length=255, blank=True, null=True)
     os = models.CharField(max_length=255, blank=True, null=True)
 

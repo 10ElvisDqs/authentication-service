@@ -43,6 +43,8 @@ PROJECT_APPS = [
     'apps.media',
     'apps.blog',
     'apps.newsletter',
+    'apps.authorization',
+
 ]
 
 THIRD_PARTY_APPS = [

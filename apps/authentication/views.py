@@ -407,8 +407,7 @@ class VerificarDispositivoView(StandardAPIView):
         codigo = request.data.get("codigo")
         device_hash = request.data.get("hash")
         ip = request.META.get("REMOTE_ADDR")
-
-        # Respuesta genérica por defecto
+    
         response_data = {
             "status": "UNAUTHORIZED",
             "message": "Acceso denegado."
@@ -435,7 +434,7 @@ class VerificarDispositivoView(StandardAPIView):
             self._log_attempt("Device not authorized", codigo, device_hash, ip)
             return self._constant_response(start_time, response_data)
 
-        # ✅ Dispositivo autorizado
+        #  Dispositivo autorizado
         user_device.last_login = timezone.now()
         user_device.last_ip = ip
         user_device.save()
